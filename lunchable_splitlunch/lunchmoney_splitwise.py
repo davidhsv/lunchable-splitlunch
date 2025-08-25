@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import splitwise
-    from dateutil.tz import tzlocal
+    from dateutil.tz import tzlocal  # type: ignore[import-untyped]
 except ImportError as ie:
     logger.exception(ie)
     _pip_extra_error = (
@@ -130,7 +130,7 @@ class SplitLunch(splitwise.Splitwise):
             if lunchable_client is None
             else lunchable_client
         )
-        self._none_tag = TagsObject(id=0, name="SplitLunchPlaceholder")
+        self._none_tag = TagsObject(id=0, name="SplitLunchPlaceholder")  # type: ignore[call-arg]
         self.splitwise_tag = self._none_tag.model_copy()
         self.splitlunch_tag = self._none_tag.model_copy()
         self.splitlunch_import_tag = self._none_tag.model_copy()
@@ -754,7 +754,7 @@ class SplitLunch(splitwise.Splitwise):
                         tags=[SplitLunchConfig.splitwise_tag]
                     )
                     tags.append(self.splitwise_tag.name)
-                tag_update = TransactionUpdateObject(tags=tags)
+                tag_update = TransactionUpdateObject(tags=tags)  # type: ignore[call-arg, arg-type]
                 self.lunchable.update_transaction(
                     transaction_id=split_transaction_id, transaction=tag_update
                 )
@@ -845,7 +845,7 @@ class SplitLunch(splitwise.Splitwise):
                         tags=[SplitLunchConfig.splitwise_tag]
                     )
                     tags.append(self.splitwise_tag.name)
-                tag_update = TransactionUpdateObject(tags=tags)
+                tag_update = TransactionUpdateObject(tags=tags)  # type: ignore[call-arg, arg-type]
                 self.lunchable.update_transaction(
                     transaction_id=split_transaction_id, transaction=tag_update
                 )
@@ -896,8 +896,10 @@ class SplitLunch(splitwise.Splitwise):
             if self.splitwise_tag.name not in tags and tag_transactions is True:
                 self._raise_nonexistent_tag_error(tags=[SplitLunchConfig.splitwise_tag])
                 tags.append(self.splitwise_tag.name)
-            update = TransactionUpdateObject(
-                category_id=self.reimbursement_category.id, tags=tags, notes=notes
+            update = TransactionUpdateObject(  # type: ignore[call-arg]
+                category_id=self.reimbursement_category.id,
+                tags=tags,  # type: ignore[arg-type]
+                notes=notes,
             )
             response = self.lunchable.update_transaction(
                 transaction_id=transaction.id, transaction=update
@@ -953,7 +955,7 @@ class SplitLunch(splitwise.Splitwise):
             new_date = splitwise_transaction.date.astimezone(tzlocal())
             if isinstance(new_date, datetime.datetime):
                 new_date = new_date.date()  # type: ignore
-            new_lunchmoney_transaction = TransactionInsertObject(
+            new_lunchmoney_transaction = TransactionInsertObject(  # type: ignore[call-arg]
                 date=new_date,
                 payee=splitwise_transaction.description,
                 amount=splitwise_transaction.financial_impact,
@@ -1204,7 +1206,7 @@ class SplitLunch(splitwise.Splitwise):
             )
             update = self.lunchable.update_transaction(
                 transaction_id=transaction.id,
-                transaction=TransactionUpdateObject(
+                transaction=TransactionUpdateObject(  # type: ignore[call-arg]
                     amount=0.00,
                     payee=self._deleted_payee,
                     notes=notes,
