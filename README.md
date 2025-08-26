@@ -7,10 +7,12 @@ LunchMoney + Splitwise Integration
 <p align="center">
   <a href="https://github.com/juftin/lunchable-splitlunch"><img src="https://img.shields.io/pypi/v/lunchable-splitlunch?color=blue&label=lunchable-splitlunch" alt="PyPI"></a>
   <a href="https://pypi.python.org/pypi/lunchable-splitlunch/"><img src="https://img.shields.io/pypi/pyversions/lunchable-splitlunch" alt="PyPI - Python Version"></a>
-  <a href="https://juftin.github.io/lunchable-splitlunch/"><img src="https://img.shields.io/static/v1?message=docs&color=526CFE&logo=Material+for+MkDocs&logoColor=FFFFFF&label=" alt="docs"></a>
-  <a href="https://github.com/pypa/hatch"><img src="https://img.shields.io/badge/%F0%9F%A5%9A-Hatch-4051b5.svg" alt="Hatch project"></a>
-  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  <a href="https://github.com/juftin/lunchable-splitlunch/blob/main/LICENSE"><img src="https://img.shields.io/github/license/juftin/lunchable-splitlunch?color=blue&label=License" alt="GitHub License"></a>
+  <a href="https://github.com/juftin/lunchable-splitlunch/actions/workflows/test.yaml?query=branch%3Amain"><img src="https://github.com/juftin/lunchable-splitlunch/actions/workflows/test.yaml/badge.svg?branch=main" alt="Testing Status"></a>
+  <a href="https://github.com/go-task/task"><img src="https://img.shields.io/badge/task---?message=task&logo=task&color=teal&labelColor=grey" alt="task"></a>
+  <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json" alt="uv"></a>
   <a href="https://github.com/pre-commit/pre-commit"><img src="https://img.shields.io/badge/pre--commit-enabled-lightgreen?logo=pre-commit" alt="pre-commit"></a>
+  <a href="https://juftin.github.io/lunchable-splitlunch/"><img src="https://img.shields.io/static/v1?message=docs&color=526CFE&logo=Material+for+MkDocs&logoColor=FFFFFF&label=" alt="docs"></a>
   <a href="https://github.com/semantic-release/semantic-release"><img src="https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg" alt="semantic-release"></a>
   <a href="https://gitmoji.dev"><img src="https://img.shields.io/badge/gitmoji-%20😜%20😍-FFDD67.svg" alt="Gitmoji"></a>
 </p>
@@ -55,8 +57,8 @@ CLI flags, respectively.
 
 #### Prerequisites
 
--   Accounts:
-    -   Splitwise must be in the account name
+- Accounts:
+    - Splitwise must be in the account name
 
 ### LunchMoney -> Splitwise
 
@@ -64,14 +66,14 @@ It supports the creation of Splitwise transactions directly from synced Lunch Mo
 
 #### Prerequisites
 
--   Financial Partners:
-    -   If you only have one friend in Splitwise, this is your Financial Partner
-    -   Financial Partners can be individual users or groups and transactions will be split accordingly
-    -   Financial Partners must be specified by their Splitwise Group ID, Splitwise User ID, or Email Address
--   Tags:
-    -   `SplitLunchImport`
--   Categories:
-    -   `Reimbursement`
+- Financial Partners:
+    - If you only have one friend in Splitwise, this is your Financial Partner
+    - Financial Partners can be individual users or groups and transactions will be split accordingly
+    - Financial Partners must be specified by their Splitwise Group ID, Splitwise User ID, or Email Address
+- Tags:
+    - `SplitLunchImport`
+- Categories:
+    - `Reimbursement`
 
 ### SplitLunch
 
@@ -79,10 +81,10 @@ It supports a workflow where you mark transactions as split (identical to `Lunch
 
 #### Prerequisites
 
--   Tags:
-    -   `SplitLunch`
--   Categories:
-    -   `Reimbursement`
+- Tags:
+    - `SplitLunch`
+- Categories:
+    - `Reimbursement`
 
 ### LunchMoney -> Splitwise (without splitting)
 
@@ -90,14 +92,14 @@ It supports the creation of Splitwise transactions directly from synced Lunch Mo
 
 #### Prerequisites
 
--   Financial Partners:
-    -   If you only have one friend in Splitwise, this is your Financial Partner
-    -   Financial Partners can be individual users or groups and transactions will be split accordingly
-    -   Financial Partners must be specified by their Splitwise Group ID, Splitwise User ID, or Email Address
--   Tags:
-    -   `SplitLunchDirectImport`
--   Categories:
-    -   `Reimbursement`
+- Financial Partners:
+    - If you only have one friend in Splitwise, this is your Financial Partner
+    - Financial Partners can be individual users or groups and transactions will be split accordingly
+    - Financial Partners must be specified by their Splitwise Group ID, Splitwise User ID, or Email Address
+- Tags:
+    - `SplitLunchDirectImport`
+- Categories:
+    - `Reimbursement`
 
 > **Note:** Some of the above scenarios allow for tagging of a `Splitwise` tag on updated transactions. This tag must be created for this functionality to work.
 
