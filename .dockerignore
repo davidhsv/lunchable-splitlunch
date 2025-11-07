@@ -4,8 +4,8 @@
 
 # Documentation
 docs/
-README.md
-*.md
+# README.md is needed for the build (referenced in pyproject.toml)
+# *.md
 
 # Tests
 tests/
