@@ -446,6 +446,18 @@ class SplitLunch(splitwise.Splitwise):
         financial_impact, self_paid = _get_splitwise_impact(
             expense=expense, current_user_id=self.current_user.id
         )
+        current_user_paid_share = 0.0
+        current_user_owed_share = 0.0
+        other_users_owed_share = 0.0
+        for expense_user in expense.users:
+            user_id = self._extract_user_id(expense_user)
+            owed_share = self._extract_user_share(expense_user, owed=True)
+            paid_share = self._extract_user_share(expense_user, owed=False)
+            if user_id == self.current_user.id:
+                current_user_paid_share = paid_share
+                current_user_owed_share = owed_share
+            else:
+                other_users_owed_share += owed_share
         expense = SplitLunchExpense(
             splitwise_id=expense.id,
             original_amount=expense.cost,
@@ -461,8 +473,88 @@ class SplitLunch(splitwise.Splitwise):
             updated_at=expense.updated_at,
             deleted_at=expense.deleted_at,
             deleted=True if expense.deleted_at is not None else False,
+            current_user_paid_share=current_user_paid_share,
+            current_user_owed_share=current_user_owed_share,
+            other_users_owed_share=other_users_owed_share,
         )
         return expense
+
+    @staticmethod
+    def _extract_user_share(expense_user: Any, owed: bool) -> float:
+        """Extract owed or paid share from a Splitwise expense user."""
+
+        attribute_prefix = "owed" if owed else "paid"
+        attribute_candidates = [
+            f"{attribute_prefix}_share",
+            f"{attribute_prefix}Share",
+        ]
+        method_name = f"get{attribute_prefix.capitalize()}Share"
+        for attr in attribute_candidates:
+            value = getattr(expense_user, attr, None)
+            if value is not None:
+                return SplitLunch._to_float(value)
+        method = getattr(expense_user, method_name, None)
+        if callable(method):
+            return SplitLunch._to_float(method())
+        return 0.0
+
+    @staticmethod
+    def _extract_user_id(expense_user: Any) -> Optional[int]:
+        """Extract the Splitwise user ID from an expense user."""
+
+        for attr in ("id", "user_id"):
+            value = getattr(expense_user, attr, None)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+        method = getattr(expense_user, "getId", None)
+        if callable(method):
+            try:
+                return int(method())
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        """Safely convert Splitwise numeric values to floats."""
+
+        if value is None:
+            return 0.0
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _create_transaction_group(
+        self,
+        *,
+        date: datetime.date,
+        payee: str,
+        transaction_ids: List[int],
+    ) -> Any:
+        """Create a grouped transaction in Lunch Money."""
+
+        create_group = getattr(self.lunchable, "create_transaction_group", None)
+        if not callable(create_group):
+            raise SplitLunchError(
+                "LunchMoney client does not support creating transaction groups."
+            )
+        return create_group(date=date, payee=payee, transactions=transaction_ids)
+
+    @staticmethod
+    def _parse_external_splitwise_id(external_id: Optional[str]) -> Optional[int]:
+        """Parse Splitwise IDs stored in Lunch Money external IDs."""
+
+        if external_id is None:
+            return None
+        base_id = str(external_id).split("-", 1)[0]
+        try:
+            return int(base_id)
+        except (TypeError, ValueError):
+            return None
 
     def _get_splitwise_asset(self) -> Optional[AssetsObject]:
         """
@@ -944,8 +1036,24 @@ class SplitLunch(splitwise.Splitwise):
         if self.splitwise_asset is None:
             self._raise_splitwise_asset_error()
             raise ValueError("SplitwiseAsset")
-        batch = []
-        new_transaction_ids = []
+        batch: List[TransactionInsertObject] = []
+        batch_metadata: List[Optional[str]] = []
+        group_metadata: Dict[str, Dict[str, Any]] = {}
+        new_transaction_ids: List[int] = []
+
+        def flush_batch() -> None:
+            nonlocal batch, batch_metadata
+            if len(batch) == 0:
+                return
+            new_ids = self.lunchable.insert_transactions(
+                transactions=batch, apply_rules=True
+            )
+            for new_id, group_key in zip(new_ids, batch_metadata):
+                new_transaction_ids.append(new_id)
+                if group_key is not None and group_key in group_metadata:
+                    group_metadata[group_key]["ids"].append(new_id)
+            batch = []
+            batch_metadata = []
         filtered_expenses = self.filter_relevant_splitwise_expenses(
             expenses=expenses,
             allow_self_paid=allow_self_paid,
@@ -955,26 +1063,80 @@ class SplitLunch(splitwise.Splitwise):
             new_date = splitwise_transaction.date.astimezone(tzlocal())
             if isinstance(new_date, datetime.datetime):
                 new_date = new_date.date()  # type: ignore
-            new_lunchmoney_transaction = TransactionInsertObject(  # type: ignore[call-arg]
-                date=new_date,
-                payee=splitwise_transaction.description,
-                amount=splitwise_transaction.financial_impact,
-                asset_id=self.splitwise_asset.id,
-                external_id=str(splitwise_transaction.splitwise_id),
-            )
-            batch.append(new_lunchmoney_transaction)
-            batch_size = 10
-            if len(batch) == batch_size:
-                new_ids = self.lunchable.insert_transactions(
-                    transactions=batch, apply_rules=True
+            transactions_to_add: List[TransactionInsertObject] = []
+            group_key: Optional[str] = None
+            if splitwise_transaction.self_paid is True:
+                own_share = round(splitwise_transaction.current_user_owed_share, 2)
+                reimbursement_amount = round(
+                    splitwise_transaction.other_users_owed_share, 2
                 )
-                new_transaction_ids += new_ids
-                batch = []
-        if len(batch) > 0:
-            new_ids = self.lunchable.insert_transactions(
-                transactions=batch, apply_rules=True
+                if reimbursement_amount == 0:
+                    reimbursement_amount = round(
+                        abs(splitwise_transaction.financial_impact), 2
+                    )
+                if own_share > 0:
+                    transactions_to_add.append(
+                        TransactionInsertObject(  # type: ignore[call-arg]
+                            date=new_date,
+                            payee=splitwise_transaction.description,
+                            amount=own_share,
+                            asset_id=self.splitwise_asset.id,
+                            external_id=f"{splitwise_transaction.splitwise_id}-self",
+                        )
+                    )
+                if reimbursement_amount > 0:
+                    if self.reimbursement_category is None:
+                        self._raise_category_reimbursement_error()
+                        raise ValueError("ReimbursementCategory")
+                    transactions_to_add.append(
+                        TransactionInsertObject(  # type: ignore[call-arg]
+                            date=new_date,
+                            payee=splitwise_transaction.description,
+                            amount=reimbursement_amount,
+                            asset_id=self.splitwise_asset.id,
+                            category_id=self.reimbursement_category.id,
+                            external_id=(
+                                f"{splitwise_transaction.splitwise_id}-reimbursement"
+                            ),
+                        )
+                    )
+                if len(transactions_to_add) >= 2:
+                    group_key = str(splitwise_transaction.splitwise_id)
+                    if group_key not in group_metadata:
+                        group_metadata[group_key] = {
+                            "ids": [],
+                            "payee": splitwise_transaction.description,
+                            "date": new_date,
+                        }
+            else:
+                transactions_to_add.append(
+                    TransactionInsertObject(  # type: ignore[call-arg]
+                        date=new_date,
+                        payee=splitwise_transaction.description,
+                        amount=splitwise_transaction.financial_impact,
+                        asset_id=self.splitwise_asset.id,
+                        external_id=str(splitwise_transaction.splitwise_id),
+                    )
+                )
+            if not transactions_to_add:
+                continue
+            for transaction in transactions_to_add:
+                batch.append(transaction)
+                batch_metadata.append(group_key)
+                if len(batch) == 10:
+                    flush_batch()
+        flush_batch()
+        for group_key, metadata in group_metadata.items():
+            if len(metadata.get("ids", [])) < 2:
+                continue
+            group_date = metadata["date"]
+            if isinstance(group_date, datetime.datetime):
+                group_date = group_date.date()
+            self._create_transaction_group(
+                date=group_date,
+                payee=str(metadata.get("payee", "Splitwise")),
+                transaction_ids=metadata["ids"],
             )
-            new_transaction_ids += new_ids
         return new_transaction_ids
 
     @staticmethod
@@ -1090,9 +1252,10 @@ class SplitLunch(splitwise.Splitwise):
             end_date=datetime.datetime(2300, 12, 31, tzinfo=datetime.timezone.utc),
         )
         splitlunch_ids = {
-            int(item.external_id)
+            parsed_id
             for item in splitlunch_expenses
-            if item.external_id is not None
+            if (parsed_id := self._parse_external_splitwise_id(item.external_id))
+            is not None
         }
         splitwise_expenses = self.get_expenses(
             limit=0,
@@ -1133,21 +1296,22 @@ class SplitLunch(splitwise.Splitwise):
             self._raise_splitwise_asset_error()
             raise ValueError("SplitwiseAsset")
         existing_transactions = {
-            int(item.external_id)
+            parsed_id
             for item in splitlunch_expenses
-            if item.external_id is not None
+            if (parsed_id := self._parse_external_splitwise_id(item.external_id))
+            is not None
         }
         deleted_ids = {
             item.splitwise_id for item in splitwise_transactions if item.deleted is True
         }
         untethered_transactions = deleted_ids.intersection(existing_transactions)
-        transactions_to_delete = [
-            tran
-            for tran in splitlunch_expenses
-            if tran.external_id is not None
-            and int(tran.external_id) in untethered_transactions
-            and tran.payee != self._deleted_payee
-        ]
+        transactions_to_delete = []
+        for tran in splitlunch_expenses:
+            if tran.external_id is None or tran.payee == self._deleted_payee:
+                continue
+            parsed_id = self._parse_external_splitwise_id(tran.external_id)
+            if parsed_id is not None and parsed_id in untethered_transactions:
+                transactions_to_delete.append(tran)
         return transactions_to_delete
 
     def refresh_splitwise_transactions(
