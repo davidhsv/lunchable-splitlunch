@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir pipx && \
 WORKDIR /app
 
 # Copy project files
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY lunchable_splitlunch/ ./lunchable_splitlunch/
 
 # Build the project using uv
