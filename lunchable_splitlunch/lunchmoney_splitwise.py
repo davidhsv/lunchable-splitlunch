@@ -917,6 +917,20 @@ class SplitLunch(splitwise.Splitwise):
             update_responses.append(formatted_update_response)
         return update_responses
 
+    @staticmethod
+    def _calculate_self_paid_shares(
+        expense: SplitLunchExpense,
+    ) -> Tuple[float, float]:
+        """Calculate the user's share and reimbursement share for a self-paid expense."""
+
+        if not expense.self_paid:
+            raise SplitLunchError(
+                "Self paid shares can only be calculated for self paid expenses."
+            )
+        reimbursement_amount = round(abs(expense.financial_impact), 2)
+        personal_amount = round(expense.original_amount - reimbursement_amount, 2)
+        return personal_amount, reimbursement_amount
+
     def splitwise_to_lunchmoney(
         self,
         expenses: List[SplitLunchExpense],
@@ -945,13 +959,23 @@ class SplitLunch(splitwise.Splitwise):
             self._raise_splitwise_asset_error()
             raise ValueError("SplitwiseAsset")
         batch = []
-        new_transaction_ids = []
-        filtered_expenses = self.filter_relevant_splitwise_expenses(
-            expenses=expenses,
-            allow_self_paid=allow_self_paid,
+        new_transaction_ids: List[int] = []
+        standard_expenses = self.filter_relevant_splitwise_expenses(
+            expenses=[item for item in expenses if item.self_paid is False],
+            allow_self_paid=False,
             allow_payments=allow_payments,
         )
-        for splitwise_transaction in filtered_expenses:
+        self_paid_expenses: List[SplitLunchExpense] = []
+        if allow_self_paid:
+            self_paid_expenses = self.filter_relevant_splitwise_expenses(
+                expenses=[item for item in expenses if item.self_paid is True],
+                allow_self_paid=True,
+                allow_payments=allow_payments,
+            )
+            if self.reimbursement_category is None:
+                self._raise_category_reimbursement_error()
+                raise ValueError("ReimbursementCategory")
+        for splitwise_transaction in standard_expenses:
             new_date = splitwise_transaction.date.astimezone(tzlocal())
             if isinstance(new_date, datetime.datetime):
                 new_date = new_date.date()  # type: ignore
@@ -975,6 +999,51 @@ class SplitLunch(splitwise.Splitwise):
                 transactions=batch, apply_rules=True
             )
             new_transaction_ids += new_ids
+        for splitwise_transaction in self_paid_expenses:
+            personal_amount, reimbursement_amount = self._calculate_self_paid_shares(
+                expense=splitwise_transaction
+            )
+            if personal_amount <= 0 and reimbursement_amount <= 0:
+                continue
+            new_date = splitwise_transaction.date.astimezone(tzlocal())
+            if isinstance(new_date, datetime.datetime):
+                new_date = new_date.date()  # type: ignore
+            notes = f"Splitwise ID: {splitwise_transaction.splitwise_id}"
+            transactions_to_insert: List[TransactionInsertObject] = []
+            if personal_amount > 0:
+                personal_transaction = TransactionInsertObject(  # type: ignore[call-arg]
+                    date=new_date,
+                    payee=splitwise_transaction.description,
+                    amount=personal_amount,
+                    asset_id=self.splitwise_asset.id,
+                    external_id=f"{splitwise_transaction.splitwise_id}-self",
+                    notes=notes,
+                )
+                transactions_to_insert.append(personal_transaction)
+            if reimbursement_amount > 0:
+                reimbursement_transaction = TransactionInsertObject(  # type: ignore[call-arg]
+                    date=new_date,
+                    payee=splitwise_transaction.description,
+                    amount=reimbursement_amount,
+                    asset_id=self.splitwise_asset.id,
+                    external_id=f"{splitwise_transaction.splitwise_id}-reimbursement",
+                    category_id=self.reimbursement_category.id,
+                    notes=notes,
+                )
+                transactions_to_insert.append(reimbursement_transaction)
+            if not transactions_to_insert:
+                continue
+            inserted_ids = self.lunchable.insert_transactions(
+                transactions=transactions_to_insert,
+                apply_rules=True,
+            )
+            new_transaction_ids += inserted_ids
+            if len(inserted_ids) >= 2:
+                self.lunchable.create_transaction_group(
+                    date=new_date,
+                    payee=splitwise_transaction.description,
+                    transactions=inserted_ids,
+                )
         return new_transaction_ids
 
     @staticmethod
