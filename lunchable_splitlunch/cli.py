@@ -177,8 +177,11 @@ def update_splitwise_balance() -> None:
 @dated_before
 @click.option(
     "--allow-self-paid/--no-allow-self-paid",
-    default=False,
-    help="Allow self-paid expenses to be imported (filtered out by default).",
+    default=True,
+    help=(
+        "Import self-paid expenses and split them into personal and "
+        "reimbursable transactions (disable with --no-allow-self-paid)."
+    ),
 )
 @click.option(
     "--allow-payments/--no-allow-payments",

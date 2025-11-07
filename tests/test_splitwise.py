@@ -1,7 +1,6 @@
-"""
-Run Tests on the Splitwise Plugin
-"""
+"""Run Tests on the Splitwise Plugin."""
 
+import datetime
 import json
 import logging
 from os import path
@@ -9,7 +8,12 @@ from os import path
 import pytest
 import splitwise
 
-from lunchable_splitlunch.lunchmoney_splitwise import SplitLunch, _get_splitwise_impact
+from lunchable_splitlunch.lunchmoney_splitwise import (
+    SplitLunch,
+    _calculate_self_paid_splits,
+    _get_splitwise_impact,
+)
+from lunchable_splitlunch.models import SplitLunchExpense, SplitLunchExpenseUserShare
 from tests.conftest import lunchable_cassette
 
 logger = logging.getLogger(__name__)
@@ -53,3 +57,41 @@ def test_financial_impact() -> None:
         assert (
             financial_impact == expected_impact
         ), f"Expected {expected_impact} for {file}"
+
+
+def test_calculate_self_paid_splits() -> None:
+    """Ensure self-paid expenses are split into personal and reimbursable portions."""
+
+    now = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    expense = SplitLunchExpense(
+        splitwise_id=1,
+        original_amount=100.0,
+        self_paid=True,
+        financial_impact=-90.0,
+        description="Example expense",
+        category="General",
+        details=None,
+        payment=False,
+        date=now,
+        users=[
+            SplitLunchExpenseUserShare(
+                user_id=111,
+                paid_share=100.0,
+                owed_share=10.0,
+                net_balance=90.0,
+            ),
+            SplitLunchExpenseUserShare(
+                user_id=222,
+                paid_share=0.0,
+                owed_share=90.0,
+                net_balance=-90.0,
+            ),
+        ],
+        created_at=now,
+        updated_at=now,
+        deleted_at=None,
+        deleted=False,
+    )
+    personal, reimbursable = _calculate_self_paid_splits(expense, current_user_id=111)
+    assert personal == 10.0
+    assert reimbursable == 90.0

@@ -8,7 +8,7 @@ from math import floor
 from os import getenv
 from random import shuffle
 from textwrap import dedent
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from lunchable import LunchMoney, __application__
 from lunchable.exceptions import LunchMoneyImportError
@@ -24,7 +24,10 @@ from lunchable.models import (
 
 from lunchable_splitlunch._config import SplitLunchConfig
 from lunchable_splitlunch.exceptions import SplitLunchError
-from lunchable_splitlunch.models import SplitLunchExpense
+from lunchable_splitlunch.models import (
+    SplitLunchExpense,
+    SplitLunchExpenseUserShare,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,91 @@ def _get_splitwise_impact(
         if expense.users[0].id == current_user_id:
             self_paid = True
     return financial_impact, self_paid
+
+
+def _get_expense_user_attribute(
+    expense_user: Any, attribute_names: Sequence[str]
+) -> Any:
+    """Retrieve an attribute or method result from a Splitwise expense user."""
+
+    for attr in attribute_names:
+        if hasattr(expense_user, attr):
+            value = getattr(expense_user, attr)
+            if callable(value):
+                try:
+                    return value()
+                except TypeError:
+                    continue
+            return value
+    raise AttributeError(f"Expense user is missing attributes: {attribute_names}")
+
+
+def _coerce_float(value: Any) -> float:
+    """Safely convert Splitwise numeric values to floats."""
+
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_expense_user_share(expense_user: Any) -> SplitLunchExpenseUserShare:
+    """Create a :class:`SplitLunchExpenseUserShare` from a Splitwise user object."""
+
+    user_id = int(
+        _get_expense_user_attribute(expense_user, ("user_id", "id", "getUserId", "getId"))
+    )
+    try:
+        paid_raw = _get_expense_user_attribute(
+            expense_user,
+            ("paid_share", "paidShare", "getPaidShare"),
+        )
+    except AttributeError:
+        paid_raw = 0.0
+    try:
+        owed_raw = _get_expense_user_attribute(
+            expense_user,
+            ("owed_share", "owedShare", "getOwedShare"),
+        )
+    except AttributeError:
+        owed_raw = 0.0
+    try:
+        balance_raw = _get_expense_user_attribute(
+            expense_user,
+            ("net_balance", "netBalance", "getNetBalance"),
+        )
+    except AttributeError:
+        balance_raw = 0.0
+    paid_share = _coerce_float(paid_raw)
+    owed_share = _coerce_float(owed_raw)
+    net_balance = _coerce_float(balance_raw)
+    return SplitLunchExpenseUserShare(
+        user_id=user_id,
+        paid_share=paid_share,
+        owed_share=owed_share,
+        net_balance=net_balance,
+    )
+
+
+def _calculate_self_paid_splits(
+    expense: SplitLunchExpense, current_user_id: int
+) -> Tuple[float, float]:
+    """Calculate the personal and reimbursable portions of a self-paid expense."""
+
+    personal_share = 0.0
+    paid_share = 0.0
+    reimbursable_share = 0.0
+    for share in expense.users:
+        if share.user_id == current_user_id:
+            personal_share = _coerce_float(share.owed_share)
+            paid_share = _coerce_float(share.paid_share)
+        else:
+            reimbursable_share += _coerce_float(share.owed_share)
+    if reimbursable_share == 0.0 and paid_share > personal_share:
+        reimbursable_share = max(paid_share - personal_share, 0.0)
+    return round(personal_share, 2), round(reimbursable_share, 2)
 
 
 class SplitLunch(splitwise.Splitwise):
@@ -446,6 +534,9 @@ class SplitLunch(splitwise.Splitwise):
         financial_impact, self_paid = _get_splitwise_impact(
             expense=expense, current_user_id=self.current_user.id
         )
+        user_shares: List[SplitLunchExpenseUserShare] = [
+            _build_expense_user_share(user) for user in expense.users
+        ]
         expense = SplitLunchExpense(
             splitwise_id=expense.id,
             original_amount=expense.cost,
@@ -456,7 +547,7 @@ class SplitLunch(splitwise.Splitwise):
             details=expense.details,
             payment=expense.payment,
             date=expense.date,
-            users=[user.id for user in expense.users],
+            users=user_shares,
             created_at=expense.created_at,
             updated_at=expense.updated_at,
             deleted_at=expense.deleted_at,
@@ -920,7 +1011,7 @@ class SplitLunch(splitwise.Splitwise):
     def splitwise_to_lunchmoney(
         self,
         expenses: List[SplitLunchExpense],
-        allow_self_paid: bool = False,
+        allow_self_paid: bool = True,
         allow_payments: bool = False,
     ) -> List[int]:
         """
@@ -929,8 +1020,9 @@ class SplitLunch(splitwise.Splitwise):
         This function inserts splitwise expenses into Lunch Money.
         If an expense not deleted and has a non-0 impact on the user's
         splitwise balance it qualifies for ingestion. By default, payments
-        and self-paid transactions are also ineligible. Otherwise it
-        will be ignored.
+        are ineligible. Self-paid transactions will be recorded as grouped
+        transactions that separate personal spending from reimbursable
+        amounts.
 
         Parameters
         ----------
@@ -944,8 +1036,20 @@ class SplitLunch(splitwise.Splitwise):
         if self.splitwise_asset is None:
             self._raise_splitwise_asset_error()
             raise ValueError("SplitwiseAsset")
-        batch = []
-        new_transaction_ids = []
+        batch: List[TransactionInsertObject] = []
+        new_transaction_ids: List[int] = []
+        batch_size = 10
+
+        def _flush_batch() -> None:
+            nonlocal batch
+            if len(batch) == 0:
+                return
+            new_ids = self.lunchable.insert_transactions(
+                transactions=batch, apply_rules=True
+            )
+            new_transaction_ids.extend(new_ids)
+            batch = []
+
         filtered_expenses = self.filter_relevant_splitwise_expenses(
             expenses=expenses,
             allow_self_paid=allow_self_paid,
@@ -955,6 +1059,14 @@ class SplitLunch(splitwise.Splitwise):
             new_date = splitwise_transaction.date.astimezone(tzlocal())
             if isinstance(new_date, datetime.datetime):
                 new_date = new_date.date()  # type: ignore
+            if splitwise_transaction.self_paid:
+                _flush_batch()
+                new_ids = self._insert_self_paid_grouped_transactions(
+                    expense=splitwise_transaction,
+                    transaction_date=new_date,
+                )
+                new_transaction_ids.extend(new_ids)
+                continue
             new_lunchmoney_transaction = TransactionInsertObject(  # type: ignore[call-arg]
                 date=new_date,
                 payee=splitwise_transaction.description,
@@ -963,24 +1075,100 @@ class SplitLunch(splitwise.Splitwise):
                 external_id=str(splitwise_transaction.splitwise_id),
             )
             batch.append(new_lunchmoney_transaction)
-            batch_size = 10
             if len(batch) == batch_size:
-                new_ids = self.lunchable.insert_transactions(
-                    transactions=batch, apply_rules=True
-                )
-                new_transaction_ids += new_ids
-                batch = []
-        if len(batch) > 0:
-            new_ids = self.lunchable.insert_transactions(
-                transactions=batch, apply_rules=True
-            )
-            new_transaction_ids += new_ids
+                _flush_batch()
+        _flush_batch()
         return new_transaction_ids
+
+    def _insert_self_paid_grouped_transactions(
+        self,
+        expense: SplitLunchExpense,
+        transaction_date: Union[datetime.date, datetime.datetime],
+    ) -> List[int]:
+        """Insert grouped transactions for a self-paid Splitwise expense."""
+
+        if self.splitwise_asset is None:
+            self._raise_splitwise_asset_error()
+            raise ValueError("SplitwiseAsset")
+        if self.reimbursement_category is None:
+            self._raise_category_reimbursement_error()
+            raise ValueError("ReimbursementCategory")
+        if isinstance(transaction_date, datetime.datetime):
+            transaction_date = transaction_date.date()
+        personal_amount, reimbursement_amount = _calculate_self_paid_splits(
+            expense=expense,
+            current_user_id=self.current_user.id,
+        )
+        personal_amount = max(personal_amount, 0.0)
+        reimbursement_amount = max(reimbursement_amount, 0.0)
+        transactions_to_insert: List[TransactionInsertObject] = []
+        base_external_id = str(expense.splitwise_id)
+        notes = f"Splitwise ID: {expense.splitwise_id}"
+        if personal_amount > 0:
+            transactions_to_insert.append(
+                TransactionInsertObject(  # type: ignore[call-arg]
+                    date=transaction_date,
+                    payee=expense.description,
+                    amount=personal_amount,
+                    asset_id=self.splitwise_asset.id,
+                    external_id=f"{base_external_id}-personal",
+                    notes=notes,
+                )
+            )
+        if reimbursement_amount > 0:
+            transactions_to_insert.append(
+                TransactionInsertObject(  # type: ignore[call-arg]
+                    date=transaction_date,
+                    payee=expense.description,
+                    amount=reimbursement_amount,
+                    asset_id=self.splitwise_asset.id,
+                    category_id=self.reimbursement_category.id,
+                    external_id=f"{base_external_id}-reimbursement",
+                    notes=notes,
+                )
+            )
+        if not transactions_to_insert:
+            return []
+        new_ids = self.lunchable.insert_transactions(
+            transactions=transactions_to_insert, apply_rules=True
+        )
+        if len(new_ids) >= 2:
+            self._group_splitwise_transactions(
+                date=transaction_date,
+                payee=expense.description,
+                transaction_ids=new_ids,
+            )
+        return new_ids
+
+    def _group_splitwise_transactions(
+        self,
+        date: Union[datetime.date, datetime.datetime],
+        payee: str,
+        transaction_ids: List[int],
+    ) -> Optional[int]:
+        """Group related Lunch Money transactions together."""
+
+        group_method = getattr(self.lunchable, "create_transaction_group", None)
+        if not callable(group_method):
+            message = (
+                "Grouping Splitwise reimbursements requires a Lunch Money client "
+                "with `create_transaction_group` support."
+            )
+            raise SplitLunchError(message)
+        if isinstance(date, (datetime.datetime, datetime.date)):
+            group_date = date.isoformat()
+        else:
+            group_date = str(date)
+        return group_method(
+            date=group_date,
+            payee=payee,
+            transactions=transaction_ids,
+        )
 
     @staticmethod
     def filter_relevant_splitwise_expenses(
         expenses: List[SplitLunchExpense],
-        allow_self_paid: bool = False,
+        allow_self_paid: bool = True,
         allow_payments: bool = False,
     ) -> List[SplitLunchExpense]:
         """
@@ -996,9 +1184,9 @@ class SplitLunch(splitwise.Splitwise):
 
         3) If the --allow-self-paid flag is not provided, it filters out
         `self-paid` expenses. A `self-paid` expense is an expense in Splitwise
-        where you originated the payment. This is excluded because it is assumed
-        that these transactions will have already been imported via a different
-        account.
+        where you originated the payment. By default these expenses are now
+        imported and converted into grouped transactions. Disable this behavior
+        with the `--no-allow-self-paid` option.
 
         4) If the --allow-payments flag is not provided, it filters out payments.
         Payments are excluded because it is assumed that these transactions will
@@ -1154,7 +1342,7 @@ class SplitLunch(splitwise.Splitwise):
         self,
         dated_after: Optional[datetime.datetime] = None,
         dated_before: Optional[datetime.datetime] = None,
-        allow_self_paid: bool = False,
+        allow_self_paid: bool = True,
         allow_payments: bool = False,
     ) -> Dict[str, Any]:
         """
