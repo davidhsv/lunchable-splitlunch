@@ -2,14 +2,18 @@
 Run Tests on the Splitwise Plugin
 """
 
+import datetime
 import json
 import logging
 from os import path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import splitwise
 
 from lunchable_splitlunch.lunchmoney_splitwise import SplitLunch, _get_splitwise_impact
+from lunchable_splitlunch.models import SplitLunchExpense
 from tests.conftest import lunchable_cassette
 
 logger = logging.getLogger(__name__)
@@ -53,3 +57,54 @@ def test_financial_impact() -> None:
         assert (
             financial_impact == expected_impact
         ), f"Expected {expected_impact} for {file}"
+
+
+def test_splitwise_to_lunchmoney_self_paid_grouping() -> None:
+    """Self-paid expenses should create grouped transactions."""
+
+    splitlunch = SplitLunch.__new__(SplitLunch)
+    splitlunch.splitwise_asset = SimpleNamespace(id=1)
+    splitlunch.reimbursement_category = SimpleNamespace(id=2)
+    splitlunch.lunchable = MagicMock()
+    splitlunch.lunchable.insert_transactions.return_value = [111, 222]
+    splitlunch.lunchable.create_transaction_group.return_value = 999
+
+    expense = SplitLunchExpense(
+        splitwise_id=9876,
+        original_amount=100.0,
+        financial_impact=-90.0,
+        self_paid=True,
+        description="Dinner",
+        category="Food",
+        details=None,
+        payment=False,
+        date=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+        users=[1, 2],
+        created_at=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+        updated_at=datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+        deleted_at=None,
+        deleted=False,
+        current_user_paid_share=100.0,
+        current_user_owed_share=10.0,
+        other_users_owed_share=90.0,
+    )
+
+    new_ids = SplitLunch.splitwise_to_lunchmoney(  # type: ignore[misc]
+        splitlunch,
+        expenses=[expense],
+        allow_self_paid=True,
+    )
+
+    assert new_ids == [111, 222]
+    splitlunch.lunchable.insert_transactions.assert_called_once()
+    inserted = splitlunch.lunchable.insert_transactions.call_args.kwargs["transactions"]
+    assert len(inserted) == 2
+    assert inserted[0].amount == pytest.approx(10.0)
+    assert inserted[0].category_id is None
+    assert inserted[0].external_id.endswith("-self")
+    assert inserted[1].amount == pytest.approx(90.0)
+    assert inserted[1].category_id == 2
+    assert inserted[1].external_id.endswith("-reimbursement")
+    splitlunch.lunchable.create_transaction_group.assert_called_once()
+    group_kwargs = splitlunch.lunchable.create_transaction_group.call_args.kwargs
+    assert group_kwargs["transactions"] == [111, 222]

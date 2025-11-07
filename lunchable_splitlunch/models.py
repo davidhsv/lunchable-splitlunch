@@ -27,3 +27,6 @@ class SplitLunchExpense(LunchableModel):
     updated_at: datetime.datetime
     deleted_at: Optional[datetime.datetime] = None
     deleted: bool
+    current_user_paid_share: float = 0.0
+    current_user_owed_share: float = 0.0
+    other_users_owed_share: float = 0.0
