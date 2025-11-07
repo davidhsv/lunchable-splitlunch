@@ -27,8 +27,10 @@ RUN uv build
 RUN pipx install dist/lunchable_splitlunch-*.whl --force
 
 # Create a script to run the refresh command with hardcoded flags
-# This script will source environment variables from /app/env.sh
+# This script will source environment variables from /app/env.sh and set PATH for pipx
 RUN echo '#!/bin/bash\n\
+# Add pipx bin directory to PATH\n\
+export PATH="/root/.local/bin:$PATH"\n\
 set -a\n\
 [ -f /app/env.sh ] && source /app/env.sh\n\
 set +a\n\
@@ -37,9 +39,8 @@ splitlunch refresh --dated-after "2025-11-06T16:30:00" --allow-self-paid' > /app
     chmod +x /app/run-refresh.sh
 
 # Set up cron job to run every 2 minutes
-RUN echo '*/2 * * * * root /app/run-refresh.sh >> /var/log/splitlunch.log 2>&1' > /etc/cron.d/splitlunch && \
-    chmod 0644 /etc/cron.d/splitlunch && \
-    crontab /etc/cron.d/splitlunch
+# Using root user's crontab directly (simpler than /etc/cron.d/)
+RUN echo '*/2 * * * * /app/run-refresh.sh >> /var/log/splitlunch.log 2>&1' | crontab -
 
 # Create log file
 RUN touch /var/log/splitlunch.log
