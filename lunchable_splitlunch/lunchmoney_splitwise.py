@@ -932,35 +932,35 @@ class SplitLunch(splitwise.Splitwise):
         and self-paid transactions are also ineligible. Otherwise it
         will be ignored.
 
-        If `allow_self_paid` is true, self-paid transactions will be
-        split into two grouped transactions:
-        1. "My Share": The portion of the expense the user is responsible for.
-        2. "Others' Share": The portion being reimbursed (as income).
+        If `allow_self_paid` is true, self-paid transactions will create
+        only the reimbursement transaction (the amount owed to the user).
+        The user is expected to manually register the full amount leaving
+        their bank account. Both transactions should use the same category.
 
         Parameters
         ----------
         expenses: List[SplitLunchExpense]
         allow_self_paid: bool
             If True, allows import of transactions the user paid for.
-            These will be split and grouped. Defaults to False.
+            Only the reimbursement amount will be created. Defaults to False.
         allow_payments: bool
             If True, allows import of payment transactions. Defaults to False.
 
         Returns
         -------
         List[int]
-            New Lunch Money transaction IDs (of the child transactions)
+            New Lunch Money transaction IDs
         """
         if self.splitwise_asset is None:
             self._raise_splitwise_asset_error()
             raise ValueError("SplitwiseAsset")
-        # Reimbursement category is needed for the new split logic
+        # Reimbursement category is needed for self-paid transactions
         if allow_self_paid and self.reimbursement_category is None:
             self._raise_category_reimbursement_error()
             raise ValueError("ReimbursementCategory")
 
         batch_insert_list = []
-        created_ids = []  # Will store child IDs from splits, and regular IDs
+        created_ids = []  # Will store transaction IDs
 
         filtered_expenses = self.filter_relevant_splitwise_expenses(
             expenses=expenses,
@@ -973,134 +973,35 @@ class SplitLunch(splitwise.Splitwise):
             if isinstance(new_date, datetime.datetime):
                 new_date = new_date.date()  # type: ignore
 
-            # New logic: If self-paid, POST one, then PUT to split it
+            # New logic: If self-paid, only create the reimbursement transaction
+            # The user will manually register the full amount leaving their bank account
             if splitwise_transaction.self_paid:
-                # Flush any pending batch inserts first
-                if batch_insert_list:
-                    new_ids = self.lunchable.insert_transactions(
-                        transactions=batch_insert_list, apply_rules=True
-                    )
-                    created_ids.extend(new_ids)
-                    batch_insert_list = []
+                # Calculate the reimbursement amount (amount owed to the user)
+                # financial_impact is negative when user is owed money, so we use abs() to get positive amount
+                reimbursement_amount = abs(splitwise_transaction.financial_impact)
 
-                # --- START: Modified Logic ---
-
-                # 3. Calculate split amounts
-                my_share_amount = round(
-                    splitwise_transaction.original_amount
-                    + splitwise_transaction.financial_impact,
-                    2,
-                )
-
-                # 3a. Check if My Share is 0
-                if my_share_amount == 0:
-                    # This is a full reimbursement. Don't create a split.
-                    # Create a single transaction categorized as Reimbursement.
-                    # The amount should be the financial_impact (which is negative, i.e., income)
+                # Only create reimbursement transaction if there's an amount owed
+                if reimbursement_amount > 0:
                     logger.info(
-                        f"Creating single reimbursement transaction for Splitwise ID "
-                        f"{splitwise_transaction.splitwise_id} (My Share is 0)"
+                        f"Creating reimbursement transaction for Splitwise ID "
+                        f"{splitwise_transaction.splitwise_id}: "
+                        f"+{reimbursement_amount} (user paid {splitwise_transaction.original_amount})"
                     )
                     reimbursement_txn = TransactionInsertObject(  # type: ignore[call-arg]
                         date=new_date,
                         payee=splitwise_transaction.description,
-                        amount=splitwise_transaction.financial_impact,  # This is the negative (income) amount
+                        amount=reimbursement_amount,  # Positive amount (income)
                         asset_id=self.splitwise_asset.id,
                         external_id=str(splitwise_transaction.splitwise_id),
-                        category_id=self.reimbursement_category.id,  # Set category directly
-                        notes="Full reimbursement (My Share was 0)",
+                        category_id=self.reimbursement_category.id,
+                        notes=f"Reimbursement (paid {splitwise_transaction.original_amount})",
                     )
-                    # Add to the batch_insert_list to be processed with other single transactions
+                    # Add to the batch_insert_list to be processed with other transactions
                     batch_insert_list.append(reimbursement_txn)
-                    # Continue to the next loop iteration, skipping the split logic
-                    continue
-
-                # --- END: Modified Logic ---
-
-                # 1. Create the parent transaction with the *total* amount
-                #    (This code only runs if my_share_amount is NOT 0)
-                parent_txn = TransactionInsertObject(  # type: ignore[call-arg]
-                    date=new_date,
-                    payee=splitwise_transaction.description,
-                    amount=splitwise_transaction.original_amount,
-                    asset_id=self.splitwise_asset.id,
-                    external_id=str(splitwise_transaction.splitwise_id),
-                    notes="Parent transaction for Splitwise split",
-                )
-
-                # 2. Insert the single parent transaction
-                try:
-                    new_parent_ids = self.lunchable.insert_transactions(
-                        transactions=[parent_txn],
-                        apply_rules=True,
-                        skip_duplicates=False,
-                    )
-                    if not new_parent_ids:
-                        logger.warning(
-                            f"Failed to insert parent for Splitwise ID "
-                            f"{splitwise_transaction.splitwise_id}. Skipping split."
-                        )
-                        continue
-                    parent_id = new_parent_ids[0]
-                except Exception as e:
-                    logger.error(
-                        f"Error inserting parent transaction for Splitwise ID "
-                        f"{splitwise_transaction.splitwise_id}: {e}"
-                    )
-                    continue
-
-                # 3. (Re-using calculated amounts from above)
-                others_share_amount = abs(splitwise_transaction.financial_impact)
-
-                # 4. Create the 'split' payload
-                my_share_split = TransactionSplitObject(
-                    date=new_date,
-                    payee=splitwise_transaction.description,
-                    amount=my_share_amount,
-                    category_id=None,  # "no category" as requested
-                    notes="My share",
-                )
-                others_share_split = TransactionSplitObject(
-                    date=new_date,
-                    payee=splitwise_transaction.description,
-                    amount=others_share_amount,
-                    category_id=self.reimbursement_category.id,  # "Reimbursement"
-                    notes="Others' share (Reimbursement)",
-                )
-
-                # Ensure the split amounts add up to the parent total
-                if round(my_share_amount + others_share_amount, 2) != round(
-                    splitwise_transaction.original_amount, 2
-                ):
-                    logger.warning(
-                        f"Split amounts do not match parent for Splitwise ID "
-                        f"{splitwise_transaction.splitwise_id}. "
-                        f"Parent: {splitwise_transaction.original_amount}, "
-                        f"MyShare: {my_share_amount}, OthersShare: {others_share_amount}. "
-                        "Adjusting 'My Share' to match."
-                    )
-                    my_share_amount = round(
-                        splitwise_transaction.original_amount - others_share_amount, 2
-                    )
-                    my_share_split.amount = my_share_amount
-
-                # 5. Call PUT to update the parent transaction with the split
-                try:
-                    update_response = self.lunchable.update_transaction(
-                        transaction_id=parent_id,
-                        split=[my_share_split, others_share_split],
-                    )
-                    # Add the new *child* transaction IDs to our list
-                    split_child_ids = update_response.get("split", [])
-                    created_ids.extend(split_child_ids)
-                    logger.info(
-                        f"Splitwise transaction {splitwise_transaction.splitwise_id} "
-                        f"split into new transactions: {split_child_ids}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to split transaction {parent_id} "
-                        f"(Splitwise ID {splitwise_transaction.splitwise_id}): {e}"
+                else:
+                    logger.debug(
+                        f"Skipping Splitwise ID {splitwise_transaction.splitwise_id} "
+                        f"(no reimbursement amount)"
                     )
 
             else:
