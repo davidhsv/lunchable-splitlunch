@@ -726,7 +726,7 @@ class SplitLunch(splitwise.Splitwise):
             )
             # Generate the second split as a copy, change some properties
             reimbursement_object = split_object.model_copy()
-            reimbursement_object.amount = amount_2 * -1
+            reimbursement_object.amount = amount_2
             reimbursement_object.category_id = self.reimbursement_category.id
             logger.debug(
                 "Splitting transaction: %s -> (%s, %s)",
@@ -990,7 +990,7 @@ class SplitLunch(splitwise.Splitwise):
                     reimbursement_txn = TransactionInsertObject(  # type: ignore[call-arg]
                         date=new_date,
                         payee=splitwise_transaction.description,
-                        amount=reimbursement_amount,  # Positive amount (income)
+                        amount=splitwise_transaction.financial_impact,
                         asset_id=self.splitwise_asset.id,
                         external_id=str(splitwise_transaction.splitwise_id),
                         category_id=self.reimbursement_category.id,
